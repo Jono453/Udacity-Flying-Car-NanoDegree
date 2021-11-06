@@ -1,8 +1,14 @@
+'''
+FCND Assignment 1: backyard_flyer.py
+
+v1. State machine and square waypoint
+v2. Realtime plotting with visdom
+'''
 import argparse
 import time
 from enum import Enum
 from datetime import datetime
-
+import visdom
 import numpy as np
 
 from udacidrone import Drone
@@ -26,6 +32,26 @@ class BackyardFlyer(Drone):
         self.in_mission = True
         self.check_state = {}
 
+        # realtime plotting
+        if (args.live == 1):
+            print("USE realtime plots")
+            # default opens up to http://localhost:8097 to view live plots
+            # open second terminal to run backyard_flyer.py in fcnd environment
+            self.v = visdom.Visdom()        
+            assert self.v.check_connection()
+
+            # Plot velocity (N)
+            v = np.array([self.local_velocity[0]])
+            self.t = 0
+            self.v_plot = self.v.line(v, X=np.array([self.t]), opts=dict(
+                title="N-Velocity", 
+                xlabel='Timestep', 
+                ylabel='m/s'
+            ))
+            self.register_callback(MsgID.LOCAL_VELOCITY, self.update_v_plot)
+        else:
+            print("DO NOT USE realtime plots")
+
         # initial state
         self.flight_state = States.MANUAL
         self.flight_start_time = datetime.now()
@@ -34,16 +60,12 @@ class BackyardFlyer(Drone):
         self.register_callback(MsgID.LOCAL_POSITION, self.local_position_callback)
         self.register_callback(MsgID.LOCAL_VELOCITY, self.velocity_callback)
         self.register_callback(MsgID.STATE, self.state_callback)
-        # add callbacks for plotting (later using visdom)
-        self.register_callback(MsgID.RAW_ACCELEROMETER, self.raw_accel_callback)
-        self.register_callback(MsgID.BAROMETER, self.baro_callback)
 
-    #Better visualisation of raw accelerometer and barometer(altitude) during box flight
-    def raw_accel_callback(self):
-        pass
-
-    def baro_callback(self):
-        pass
+    def update_v_plot(self):
+        d = np.array([self.local_velocity[0]])
+        # update timestep
+        self.t += 1
+        self.v.line(d, X=np.array([self.t]), win=self.v_plot, update='append')
 
     """
     the current local position of the drone.
@@ -58,13 +80,13 @@ class BackyardFlyer(Drone):
 
         # in landing state, check safe height above ground
         if self.flight_state == States.LANDING:
+
+            #print("Local Height: {0}".format(self.local_position[2]))
            
             #if safe height above ground to begin disarm transition
-            if (abs(self.local_position[2]) < 2.0):
-                self.disarming_transition()
-                print("Landing: {0}m".format(self.local_position[2]))
-            else:
-                print("Unsafe height to disarm")
+            land_altitude = -1.0 * self.local_position[2]
+            if (land_altitude < 0.90 * self.target_position[2]):
+                self.disarming_transition()          
 
         # in takeoff state, monitor height before starting first waypoint transition
         elif self.flight_state == States.TAKEOFF:
@@ -111,22 +133,18 @@ class BackyardFlyer(Drone):
             if self.guided:
                 self.waypoint_transition()   
         elif self.flight_state == States.DISARMING:
-            if (not self.armed) and (not self.guided):
-                self.manual_transition()                        
+            if (not self.armed): #revoke guided mode if drone is to be disarmed
+                self.manual_transition()       
 
     def calculate_box(self, boxSize):
-        """TODO: Fill out this method
-        
-        1. Return waypoints to fly a box
-        """
         #N, E, altitude (set) for each waypoint
         # User defined array for mission waypoints including start waypoint
-        mission = np.array([[boxSize, 0.0, args.height],[boxSize,boxSize,args.height],\
-            [0.0, boxSize, args.height],[0.0, 0.0, args.height]])
+        mission = np.array([[0.0, 0.0, args.height],[boxSize, 0.0, args.height],[boxSize,boxSize,args.height],\
+            [0.0, boxSize, args.height]])
         # Pass user mission into flight controller stored waypoints
         for mission_ctr in mission:
             self.all_waypoints.append(mission_ctr)
-        return self.all_waypoints #filled in with desired mission as numpy 2D array (make dynamic)        
+        return self.all_waypoints #filled in with desired mission as numpy 2D array        
 
     def arming_transition(self):
         """TODO: Fill out this method
@@ -137,7 +155,7 @@ class BackyardFlyer(Drone):
         4. Transition to the ARMING state
         """
         print("arming transition")
-        self.take_control()
+        self.take_control() #change to guided mode
         self.arm()
         # set the current location to be the home position (X,Y,Z)
         self.set_home_position(self.global_position[0],
@@ -185,7 +203,7 @@ class BackyardFlyer(Drone):
 
     def disarming_transition(self):      
         print("disarm transition")
-        self.disarm
+        self.disarm()
         print("Drone disarmed! Total Flight Time: {0}".format(datetime.now() - self.flight_start_time))
         self.flight_state = States.DISARMING       
         
@@ -219,18 +237,19 @@ class BackyardFlyer(Drone):
         print("Closing log file")
         self.stop_log()
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=5760, help='Port number')
     parser.add_argument('--host', type=str, default='127.0.0.1', help="host address, i.e. '127.0.0.1'")
     parser.add_argument('--height', type=int, default=10.0, help='target altitude for transition')
     parser.add_argument('--box', type=int, default=10.0, help='target box size')
+    parser.add_argument('--live', type=int, help='view visdom real time plots')
     args = parser.parse_args()
 
     conn = MavlinkConnection('tcp:{0}:{1}'.format(args.host, args.port), threaded=False, PX4=False)
     #conn = WebSocketConnection('ws://{0}:{1}'.format(args.host, args.port))
+    print("Connected to drone at {0} port {1}".format(args.host, args.port))    
     drone = BackyardFlyer(conn)
     time.sleep(2)
     drone.start()
-    print("Connected to drone at {0} port {1}".format(args.host, args.port))
+    
