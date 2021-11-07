@@ -10,10 +10,12 @@ from enum import Enum
 from datetime import datetime
 import visdom
 import numpy as np
-
+import math
 from udacidrone import Drone
 from udacidrone.connection import MavlinkConnection, WebSocketConnection  # noqa: F401
 from udacidrone.messaging import MsgID
+
+DEGREES_TO_RADIANS = math.pi/180
 
 class States(Enum):
     MANUAL = 0
@@ -28,6 +30,7 @@ class BackyardFlyer(Drone):
     def __init__(self, connection):
         super().__init__(connection)
         self.target_position = np.array([0.0, 0.0, 0.0])
+        self.previous_position = np.array([0.0, 0.0, 0.0])
         self.all_waypoints = []
         self.in_mission = True
         self.check_state = {}
@@ -102,6 +105,7 @@ class BackyardFlyer(Drone):
        
     """
     The current velocity vector of the drone in meters/second, represented in the local NED frame
+    [vnorth (meter/second), veast (meter/second), vdown (meter/second)]
     """
     def velocity_callback(self):
         """
@@ -110,11 +114,22 @@ class BackyardFlyer(Drone):
         This triggers when `MsgID.LOCAL_VELOCITY` is received and self.local_velocity contains new data
         """        
         # Check mission is loaded before any flight or arming can occur
-        if self.flight_state == States.ARMING:
+        if (self.flight_state == States.ARMING):
             self.calculate_box(args.box)
             print("Mission Loaded --- Success")
             time.sleep(0.5)
+            #print("Initial Velocity:")
+            #print("Nv: {0}, Ev: {1}, Dv: {2}".format(self.local_velocity[0],self.local_velocity[1],self.local_velocity[2]))
             self.takeoff_transition()
+
+        # limit velocity to safe velocity
+        elif self.flight_state == States.LANDING:
+            if (self.local_velocity[2] > 2.0):
+                print("Slowing drone descent")                
+
+        # point drone forwards during waypoints transitions
+        elif self.flight_state == States.WAYPOINT:            
+            print("Nv: {0}, Ev: {1}, Dv: {2}".format(self.local_velocity[0],self.local_velocity[1],self.local_velocity[2]))
 
     def state_callback(self):
         """
@@ -171,6 +186,12 @@ class BackyardFlyer(Drone):
         self.takeoff(self.target_position[2]) #drone takes off to desired altitude
         self.flight_state = States.TAKEOFF
 
+    def calc_waypoint_heading(self,curr_n,curr_e,next_n,next_e):
+        if (next_e != curr_e and next_e < curr_e) or (next_n != curr_n and next_n < curr_n):
+            return 90 * DEGREES_TO_RADIANS
+        elif (next_e != curr_e and next_e > curr_e) or (next_n != curr_n and next_n > curr_n):
+            return -90 * DEGREES_TO_RADIANS
+
     def waypoint_transition(self):
         """TODO: Fill out this method
     
@@ -181,14 +202,16 @@ class BackyardFlyer(Drone):
         
         # transition to waypoint state while there are still waypoints in list
         # else begin to land if at start position        
-        if (len(self.all_waypoints) > 0):
-            print("To Next WP")
+        if (len(self.all_waypoints) > 0):            
             self.flight_state = States.WAYPOINT
             # extract from self.all_waypoints list and transfer to self.target_position
-            curr_waypoint = self.all_waypoints.pop() #remove and return last item in waypoints list
-            self.cmd_position(curr_waypoint[0],curr_waypoint[1],curr_waypoint[2],0) #NED,Heading
-            print("Current WayPoint: ")
-            print("North: {0}, East: {1}, Altitude: {2}".format(curr_waypoint[0],curr_waypoint[1],curr_waypoint[2]))       
+            self.previous_position = self.target_position #store position before pop
+            self.target_position = self.all_waypoints.pop() #remove and return last item in waypoints list
+            print("-------------Next WayPoint:------------ ")
+            print("North: {0}, East: {1}, Altitude: {2}".format(self.target_position[0],self.target_position[1],self.target_position[2]))    
+            self.cmd_position(self.target_position[0],self.target_position[1],self.target_position[2],\
+                self.calc_waypoint_heading(self.previous_position[0],self.previous_position[1],\
+                self.target_position[0], self.target_position[1])) 
             time.sleep(2)
         else:
             print("All waypoints completed")
@@ -242,8 +265,8 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=5760, help='Port number')
     parser.add_argument('--host', type=str, default='127.0.0.1', help="host address, i.e. '127.0.0.1'")
     parser.add_argument('--height', type=int, default=10.0, help='target altitude for transition')
-    parser.add_argument('--box', type=int, default=10.0, help='target box size')
-    parser.add_argument('--live', type=int, help='view visdom real time plots')
+    parser.add_argument('--box', type=int, default=5.0, help='target box size')
+    parser.add_argument('--live', type=int, default=0.0,help='view visdom real time plots')
     args = parser.parse_args()
 
     conn = MavlinkConnection('tcp:{0}:{1}'.format(args.host, args.port), threaded=False, PX4=False)
