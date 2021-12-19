@@ -2,6 +2,7 @@ import argparse
 import time
 import msgpack
 from enum import Enum, auto
+import matplotlib.pyplot as plt
 
 import numpy as np
 import pandas as pd
@@ -10,7 +11,7 @@ from planning_utils import a_star, heuristic, create_grid
 from udacidrone import Drone
 from udacidrone.connection import MavlinkConnection
 from udacidrone.messaging import MsgID
-from udacidrone.frame_utils import global_to_local
+from udacidrone.frame_utils import global_to_local, local_to_global
 
 class States(Enum):
     MANUAL = auto()
@@ -110,22 +111,49 @@ class MotionPlanning(Drone):
         data = msgpack.dumps(self.waypoints)
         self.connection._master.write(data)
 
-    # choose latitude and longitude in map and transform
-    # it to goal location in grid
-    # global_to_local(global_position, global_home)
-    def set_goal_from_global(self, global_latitude, global_longitude):
-        # in NED coordinate frame              
-        local_goal = global_to_local([global_longitude, global_latitude, 0],self.global_home)
-        return local_goal
+    # choose latitude and longitude in map (global) and transform
+    # it to goal location in grid (local)          
+    def choose_goal_global(self, goal_longitude,goal_latitude):   
+        converted_global_goal = global_to_local([goal_longitude,goal_latitude,0],self.global_home)
+        print("NED coordinates for specified goal: {0},{1},{2}".format(converted_global_goal[0],converted_global_goal[1],converted_global_goal[2]))        
+        return converted_global_goal
+
+    def point(self,p):
+        return np.array([p[0], p[1], 1.]).reshape(1, -1)
+
+    def collinearity_check(self,p1, p2, p3, epsilon=1e-6):   
+        m = np.concatenate((p1, p2, p3), 0)
+        det = np.linalg.det(m)
+        return abs(det) < epsilon
+
+    def prune_path(self,path):
+        if path is not None:
+            pruned_path = [p for p in path]
+            i = 0
+            while (i < len(pruned_path)-2):
+                p1 = self.point(pruned_path[i])
+                p2 = self.point(pruned_path[i+1])
+                p3 = self.point(pruned_path[i+2])
+                if self.collinearity_check(p1,p2,p3):
+                    pruned_path.remove(pruned_path[i+1])
+                else:
+                    i += 1
+        else:
+            pruned_path = path
+            
+        return pruned_path
 
     def plan_path(self):
         self.flight_state = States.PLANNING
         print("Searching for a path ...")
         TARGET_ALTITUDE = 5
         SAFETY_DISTANCE = 5
-        GOAL_LONGITUDE = -122.384774
-        GOAL_LATITUDE = 37.796014
-
+        
+        GOAL_LONGITUDE = -122.399466
+        GOAL_LATITUDE = 37.795933
+        TEST_GOAL_NORTH = 700.9
+        TEST_GOAL_EAST = 266.0
+        GRID_BOUNDARY = 921
         self.target_position[2] = TARGET_ALTITUDE
 
         global_data = pd.read_csv('colliders.csv')   
@@ -136,34 +164,73 @@ class MotionPlanning(Drone):
         #print(parsed_longitude[2])
         curr_gps_longitude = float(parsed_longitude[2])
 
-        self.set_home_position(curr_gps_longitude,curr_gps_latitude,0)
+        # set global home position using colliders csv data
+        self.set_home_position(curr_gps_longitude,curr_gps_latitude,-TARGET_ALTITUDE) 
         # (east_home, north_home, _, _) = utm.from_latlon(global_home[1], global_home[0])
-        local_coordinates_NED = global_to_local([self._longitude,self._latitude,self._altitude], self.global_home)               
+        local_start = global_to_local([self._longitude,self._latitude,0], self.global_home)    
+        #print("Local Start N,E: {0}.{1}".format(local_start[1],local_start[0]))                   
         
-        print('global home {0}, position {1}, local position {2}'.format(self.global_home,self.global_position,self.local_position))
+        print('global home {0}, global position {1}, local position {2}'.format(self.global_home,self.global_position,self.local_position))
         # Read in obstacle map
         data = np.loadtxt('colliders.csv', delimiter=',', dtype='Float64', skiprows=2)
         print("Loaded obstacle data")
         
         # Define a grid for a particular altitude and safety margin around obstacles
         grid, north_offset, east_offset = create_grid(data, TARGET_ALTITUDE, SAFETY_DISTANCE)
-        #print("North offset = {0}, east offset = {1}".format(north_offset, east_offset))
-        # Define starting point on the grid (originally this was just grid center)        
-        grid_start = (self.local_position[0]-north_offset, self.local_position[1]-east_offset)
-                
-        # Set goal as some arbitrary position on the grid
-        temp_goal = self.set_goal_from_global(GOAL_LATITUDE,GOAL_LONGITUDE)                        
-        grid_goal = (temp_goal[0],temp_goal[1])
-        #grid_goal = (750., 370.) #debug usage
+        
+        #print("North offset = {0}, east offset = {1}".format(north_offset, east_offset)) #North offset = -316, east offset = -445
+        # Define starting point on the grid (originally this was just grid center) to be current local position from GPS
+        grid_centre = np.array([-north_offset,-east_offset]) #coordinates in grid of 316,445
+        grid_start = (int(local_start[0]-north_offset), int(local_start[1]-east_offset))                 
 
-        # Run A* to find a path from start to goal
-        print('Local Start and Goal: ', grid_start, grid_goal)
-        time.sleep(2)
+        debug_mode = False
+
+        if (debug_mode):                        
+            #grid_goal = (int(local_start[0]-north_offset+80), int(local_start[1]-east_offset+120))
+            grid_goal = (int(TEST_GOAL_NORTH),int(TEST_GOAL_EAST))            
+        else:                                       
+            converted_global_goal = self.choose_goal_global(GOAL_LONGITUDE,GOAL_LATITUDE)
+            if (converted_global_goal[0]-north_offset > GRID_BOUNDARY or converted_global_goal[1]-east_offset > GRID_BOUNDARY):
+                print("Chosen goal (local) NED coordinate invalid")
+                self.manual_transition()
+            else:                
+                print("Chosen goal (local) NED coordinate is valid")    
+                grid_goal = (int(converted_global_goal[0]-north_offset),int(converted_global_goal[1]-east_offset)) #convert global grid coordinates
+                # back to valid grid references
+        
+        print("Local Start: {0}".format(grid_start))
+        #print("Global Start: {0},{1}".format(curr_gps_longitude,curr_gps_latitude))
+        print("Local Goal: {0}".format(grid_goal))        
+        #print("local_to_global Global Goal: {0}".format(local_to_global([grid_goal[1],grid_goal[0],0],self.global_home)))
+        #print("set Global Goal: {0},{1}".format(GOAL_LONGITUDE,GOAL_LATITUDE)) #to check functionality        
+
+
+        # Visualisation of local start and goal positions before A*
+        plt.rcParams['figure.figsize'] = 9,9 # at runtime 
+        plt.imshow(grid, origin='lower') 
+        plt.xlabel('EAST')
+        plt.ylabel('NORTH')  
+        plt.plot(grid_centre[1], grid_centre[0], 'bo')        
+        plt.plot(grid_start[1], grid_start[0], 'x') #E,N ordering
+        plt.plot(grid_goal[1], grid_goal[0], 'o') #E,N ordering
+        plt.show()
+
+        # Run A* to find a path from start to goal        
         path, _ = a_star(grid, heuristic, grid_start, grid_goal)
-        # TODO: prune path to minimize number of waypoints
+        print("Original A* path: {0}".format(len(path)))
+        new_path = self.prune_path(path)
+        print("Pruned path: {0}".format(len(new_path)))
+
+        '''
+        # Visualisation of pruned path
+        if new_path is not None:
+            pp = np.array(new_path)
+            plt.plot(pp[:, 1], pp[:, 0], 'g')
+            plt.scatter(pp[:, 1], pp[:, 0])
+        '''
 
         # Convert path to waypoints
-        waypoints = [[p[0] + north_offset, p[1] + east_offset, TARGET_ALTITUDE, 0] for p in path]
+        waypoints = [[p[0] + north_offset, p[1] + east_offset, TARGET_ALTITUDE, 0] for p in new_path]
         # Set self.waypoints
         self.waypoints = waypoints        
         self.send_waypoints()
@@ -189,5 +256,6 @@ if __name__ == "__main__":
 
     conn = MavlinkConnection('tcp:{0}:{1}'.format(args.host, args.port), timeout=60)
     drone = MotionPlanning(conn)
+    np.set_printoptions(precision=3)
     time.sleep(1)    
     drone.start()
