@@ -71,18 +71,19 @@ VehicleCommand QuadControl::GenerateMotorCommands(float collThrustCmd, V3F momen
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
   // for quadrotor body frame with x and y axes halfway between rotor arms
-  float arm_length = L / sqrt(2.f);
+  
+  float arm_length = L / sqrtf(2.f);
   float roll_x_force = momentCmd.x / arm_length; //moments between 14 and 23
   float pitch_y_force = momentCmd.y / arm_length; //moments between 12 and 34
   float yaw_z_force = momentCmd.z / kappa; // moments between 13 (CW) and 24 (CCW), 
   float totalThrust = collThrustCmd; // total thrust
   
-  // roll positive is TO RIGHT. pitch positive it UPWARDS. CW is positive for reactive yaw moment
   cmd.desiredThrustsN[0] = (totalThrust + roll_x_force + pitch_y_force - yaw_z_force) / 4.f;// front left
   cmd.desiredThrustsN[1] = (totalThrust - roll_x_force + pitch_y_force + yaw_z_force) / 4.f; // front right
   cmd.desiredThrustsN[2] = (totalThrust + roll_x_force - pitch_y_force + yaw_z_force) / 4.f;// rear right
   cmd.desiredThrustsN[3] = (totalThrust - roll_x_force - pitch_y_force - yaw_z_force) / 4.f;// rear left
   return cmd;
+  
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
 }
@@ -140,9 +141,28 @@ V3F QuadControl::RollPitchControl(V3F accelCmd, Quaternion<float> attitude, floa
   Mat3x3F R = attitude.RotationMatrix_IwrtB();
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
+  ///*
+  if (collThrustCmd > 0) 
+  {
+    float cmdAccel = -collThrustCmd / mass; //Newtons converted to m/s/s
 
+    // Limit to max tilt angle
+    // Adding sine of maxTiltAngle TODO
+    float b_x = CONSTRAIN(accelCmd.x/cmdAccel,-sin(maxTiltAngle),sin(maxTiltAngle));
+    float b_y = CONSTRAIN(accelCmd.y/cmdAccel,-sin(maxTiltAngle),sin(maxTiltAngle));
 
+    // scalar * R matrix * vector for desired rate of change
+    pqrCmd.x = (R(1,0) * (kpBank * (b_x - R(0,2))) - R(0,0) * (kpBank * (b_y  - R(1,2)))) / R(2,2);
+    pqrCmd.y = (R(1,1) * (kpBank * (b_x - R(0,2))) - R(0,1) * (kpBank * (b_y  - R(1,2)))) / R(2,2);
+  }
+  else
+  {
+    pqrCmd.x = 0.0;
+    pqrCmd.y = 0.0;
+  }
 
+  pqrCmd.z = 0; //leave yaw axis as default
+  //*/  
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
   return pqrCmd;
@@ -173,7 +193,12 @@ float QuadControl::AltitudeControl(float posZCmd, float velZCmd, float posZ, flo
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
-
+  #define ACCEL_GRAVITY 9.81    
+  integratedAltitudeError += (posZCmd - posZ) * dt;  
+  float u_1 = kpPosZ * (posZCmd - posZ) + kpVelZ * (velZCmd - velZ) + (KiPosZ * integratedAltitudeError) + accelZCmd;
+  float c = ((u_1-ACCEL_GRAVITY) / R(2,2));
+  CONSTRAIN(c, -maxDescentRate/dt,maxAscentRate/dt); 
+  thrust = -c * mass;
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
   
@@ -211,7 +236,11 @@ V3F QuadControl::LateralPositionControl(V3F posCmd, V3F velCmd, V3F pos, V3F vel
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
-  
+  velCmd.x = CONSTRAIN(velCmd.x, -maxSpeedXY, maxSpeedXY);
+  velCmd.y = CONSTRAIN(velCmd.y, -maxSpeedXY, maxSpeedXY);
+  accelCmd = kpPosXY * (posCmd - pos) + kpVelXY * (velCmd - vel) + accelCmd;
+  accelCmd.x = CONSTRAIN(accelCmd.x, -maxAccelXY, maxAccelXY);
+  accelCmd.y = CONSTRAIN(accelCmd.y, -maxAccelXY, maxAccelXY);
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
@@ -233,7 +262,14 @@ float QuadControl::YawControl(float yawCmd, float yaw)
 
   float yawRateCmd=0;
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
+  
+  # define M_PI 3.14159
+  float yaw_error = fmodf(yawCmd,2*M_PI) - fmodf(yaw,2*M_PI);
 
+  if (yaw_error > M_PI) yaw_error -= 2.0*M_PI;
+  else if (yaw_error < -M_PI) yaw_error += 2.0*M_PI;
+
+  yawRateCmd = yaw_error * kpYaw;
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
