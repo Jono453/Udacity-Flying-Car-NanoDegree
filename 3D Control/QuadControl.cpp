@@ -77,11 +77,12 @@ VehicleCommand QuadControl::GenerateMotorCommands(float collThrustCmd, V3F momen
   float pitch_y_force = momentCmd.y / arm_length; //moments between 12 and 34
   float yaw_z_force = momentCmd.z / kappa; // moments between 13 (CW) and 24 (CCW), 
   float totalThrust = collThrustCmd; // total thrust
-  
-  cmd.desiredThrustsN[0] = (totalThrust + roll_x_force + pitch_y_force - yaw_z_force) / 4.f;// front left
+
+  cmd.desiredThrustsN[0] = (totalThrust + roll_x_force + pitch_y_force - yaw_z_force) / 4.f; // front left
   cmd.desiredThrustsN[1] = (totalThrust - roll_x_force + pitch_y_force + yaw_z_force) / 4.f; // front right
-  cmd.desiredThrustsN[2] = (totalThrust + roll_x_force - pitch_y_force + yaw_z_force) / 4.f;// rear right
-  cmd.desiredThrustsN[3] = (totalThrust - roll_x_force - pitch_y_force - yaw_z_force) / 4.f;// rear left
+  cmd.desiredThrustsN[2] = (totalThrust + roll_x_force - pitch_y_force + yaw_z_force) / 4.f; // rear right
+  cmd.desiredThrustsN[3] = (totalThrust - roll_x_force - pitch_y_force - yaw_z_force) / 4.f; // rear left
+
   return cmd;
   
   /////////////////////////////// END STUDENT CODE ////////////////////////////
@@ -147,7 +148,7 @@ V3F QuadControl::RollPitchControl(V3F accelCmd, Quaternion<float> attitude, floa
     float cmdAccel = -collThrustCmd / mass; //Newtons converted to m/s/s
 
     // Limit to max tilt angle
-    // Adding sine of maxTiltAngle TODO
+    // Adding sine of maxTiltAngle
     float b_x = CONSTRAIN(accelCmd.x/cmdAccel,-sin(maxTiltAngle),sin(maxTiltAngle));
     float b_y = CONSTRAIN(accelCmd.y/cmdAccel,-sin(maxTiltAngle),sin(maxTiltAngle));
 
